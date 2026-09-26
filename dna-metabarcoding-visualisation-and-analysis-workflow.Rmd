@@ -1,0 +1,959 @@
+---
+title: "DNA metabarcoding analysis workflow"
+output:
+  html_document:
+    toc: true
+    code_folding: hide
+  github_document: default
+
+---
+
+**DNA metabarcoding analysis workflow**
+
+This project presents and analyses NGS data to determine how insect pollinators of cocoa beans utilise the habitat around cocoa bean farms.
+
+The samples were collected from different cocoa farm types in the Bobiri Forest
+Reserve, Ghana in 2024. Farms types consisted of agroforestry, full sun farms, farms
+located near forests and farms located inside forests. DNA was extracted from rotten
+cocoa pods, leaf litter, and banana pseudostems.
+
+All calculations were completed using R v.4.2.2. Relative read abundance (RRA) was
+used to represent the proportion of candidate pollinator families in the insect
+community (Prieto et al., 2025). RRA was calculated by dividing reads assigned to a
+family by the total reads in the sample (Prieto et al., 2025). 
+
+RRA is semi-quantitative due
+to primer bias but has been shown to accurately represent dietary composition (Deagle
+et al., 2018). RRA is used in conjunction with frequency of
+occurrence (FOO). This was calculated by dividing the number of samples in which a
+family was detected by the total number of samples (Kennerly et al., 2024). This
+measure is also semi-quantitative and can over-inflate importance of taxa, however, it is
+considered more reliable than RRA due to taxa-specific bias during sequencing (Deagle
+et al., 2019). 
+
+
+```{r setup, echo=TRUE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Packages !
+
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(decontam)
+library(tidyr)
+library(vegan)
+library(gridExtra)
+
+```
+
+*Presence of candidate pollinators within the insect community*
+
+Analysis was conducted on the composition of the insect OTUs by order and the mean
+RRA and FOO of families of interest (Fig 1). Families selected included those most
+prevalent in the literature, as well as families that exhibited the small morphology
+required; this included small Dipterans and Hymenoptera capable of pollination,
+parasitic wasps, and aphids (Toldeo-Hernandez et al., 2017, Claus et al., 2018,
+Jaramillo et al., 2024, Lander et al., 2025).
+
+Most of the insect sequences were unassigned a specific order. The most common order by number of reads was the Dipterans followed by the Coleopteras.
+
+
+```{r workflow and pie chart, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+# read excel file into R
+
+DNA_Meta <- read_excel("Data/Illumina Results.xlsx")
+
+# create vectors containing containing orders of interest
+
+insect_order <- c("Arachnida","Coleoptera", "Diptera", "Hemiptera", 
+                  "Hymenoptera", "Lepidoptera", "Thysanoptera")
+
+#create vectors containing families of interest
+
+dipterans <- c("Cecidomyiidae", 
+               "Ceratopogonidae", 
+               "Chloropidae", 
+               "Drosophilidae", 
+               "Muscidae", 
+               "Mycetophilidae", 
+               "Phoridae", 
+               "Psychodidae", 
+               "Sciaridae", 
+               "Tachinidae")
+
+hymenoptera <- c("Braconidae", 
+                 "Formicidae", 
+                 "Ichneumonidae", 
+                 "Vespidae")
+
+hemiptera <- c("Aphididae")
+
+families_of_interest <- c(dipterans, hymenoptera, hemiptera)
+
+# create vectors specifying which samples correspond to which substrate
+
+# CPR - rotten cocoa pods
+# BP - banana pseudostem
+# LL - leaf litter
+
+
+rotten_cocoa  <- c("KACPR4", 
+                   "KACPR1", 
+                   "YACPR3", 
+                   "KACPR3",  
+                   "MaxCPR3", 
+                   "KKCPR1", 
+                   "KKCPR4", 
+                   "MaxCPR1", 
+                   "MaxCPR4", 
+                   "KKCPR5",
+                   "YACPR2", 
+                   "AMCPR5", 
+                   "YACPR1", 
+                   "KACPR5", 
+                   "FOCPR1",  
+                   "AMCPR2", 
+                   "AMCPR1", 
+                   "IBCPR1", 
+                   "FOCPR2", 
+                   "YACPR5")
+
+
+
+
+banana_stem <- c("YABP2", 
+                 "YABP1", 
+                 "KABP1", 
+                 "FOBP1", 
+                 "AMBP1")
+
+leaf_litter <- c("KKLL3", 
+                 "AMLL5", 
+                 "KKLL4", 
+                 "YALL1", 
+                 "KKLL5", 
+                 "KALL3", 
+                 "MaxLL5", 
+                 "YALL2", 
+                 "FOLL3", 
+                 "AMLL3", 
+                 "MaxLL1", 
+                 "FOLL2")
+
+#remove columns 1, 57-78 as to leave only count data for each sample
+
+otu_counts <- DNA_Meta[ ,-c(1, 57:78)] 
+
+#switch rows and columns 
+
+otu_t <- t(otu_counts)
+
+#turn all na values to 0
+
+otu_t[is.na(otu_t)] <- 0
+
+#create data frame that states the negative samples - not included in the analysis 
+#TRUE identifies the non-control samples
+
+sample_data <- data.frame(
+  sample = rownames(otu_t),
+  is.neg = grepl("Neg", rownames(otu_t))  
+)
+
+# isContaminant prevalence method compares detection prevalence between 
+# negative and true samples.
+
+contam_results <- isContaminant(
+  otu_t,
+  neg = sample_data$is.neg,
+  method = "prevalence"
+)
+
+# take the list of contaminants and mark them as TRUE
+
+contaminants <- rownames(contam_results)[contam_results$contaminant == TRUE]
+
+# Remove OTUs identified as contaminants and erroneous taxonomic assignments specific to this data set
+# for example
+
+DNA_Meta_filt <- DNA_Meta[-c(3, 20, 36, 39, 46, 98, 158, 165, 
+                             which(rownames(DNA_Meta) %in% 
+                                     contaminants)), ]
+
+
+# keep OTUs assigned to Insecta 
+# candidate pollinator families selected later 
+
+
+otu_insects <- DNA_Meta_filt[
+  DNA_Meta_filt$class == "Insecta" &
+    !is.na(DNA_Meta_filt$class),
+  ]
+
+# filtering out unwanted columns in data set 
+
+neg_samples <- c("NegPCRCtrl2", 
+              "NegPCRCtrl...31", 
+              "NegPCRCtrl...40", 
+              "NegPCRCtrl...46", 
+              "NegPCRCtrl...54", 
+              "NegPCRCtrl...56", 
+              "NegEC1SOIL", 
+              "NegEC1PLANT")
+              
+excluded_samples <- c("IBX", 
+                      "IBM1", 
+                      "FOM2", 
+                      "YAM2", 
+                      "KKM2", 
+                      "AMM2", 
+                      "MaxM1", 
+                      "YACPF2", 
+                      "YACPF4", 
+                      "ADYBP1", 
+                      "YACPR5")
+
+non_numerical_columns <- c("Seq", 
+                           "totalreads", 
+                           "sacc", 
+                           "gi", 
+                           "staxid", 
+                           "piden", 
+                           "lengt", 
+                           "mismtach", 
+                           "gapopen", 
+                           "qstart", 
+                           "qend", 
+                           "sstart", 
+                           "send", 
+                           "evalue", 
+                           "bitscore", 
+                           "nummaxhits", 
+                           "phylum", 
+                           "genus", 
+                           "species", 
+                           "...79", 
+                           "...80", 
+                           "TOTAL")
+
+
+
+sample_cols <- setdiff(colnames(DNA_Meta)[
+  sapply(DNA_Meta, is.numeric)
+  ], c(excluded_samples, neg_samples, non_numerical_columns)
+)
+
+# create a table displaying the class, family and order of an OTU, the sample in whcih i
+
+insect_reads <- otu_insects %>%
+  select(all_of(sample_cols), class, family, order) %>%
+  group_by(class, order, family) %>%
+  summarise(across(all_of(sample_cols), sum), .groups = "drop") %>%
+  pivot_longer(cols = all_of(sample_cols),
+               names_to = "Sample",
+               values_to = "Reads")
+
+
+# the relative read abundance Relative read abundance (RRA) is
+# used to represent the proportion of candidate pollinator family reads in the insect
+# community. RRA is calculated by dividing reads assigned to a
+# family by the total reads in the insect community 
+
+# total reads in the sample are not used to account for various OTUs unrelated 
+# to the insect community (parasites, undetected contaminants etc)
+
+# order RRA is calculated - this reflects the proportion of reads exhibited by each 
+# identified order
+
+order_rra <- insect_reads %>%
+  mutate(
+    order = na_if(order, "NA"),
+    order = ifelse(is.na(order), "Unassigned", order)
+  )%>%
+  group_by(order) %>%
+  summarise(total_reads = sum(Reads, na.rm = TRUE)) %>%
+  mutate(
+    fraction = total_reads / sum(total_reads)
+  ) %>%
+  filter(fraction > 0) # remove orders that exhibit 0 reads
+
+# build pit chart
+
+ggplot(order_rra, aes(x = "", y = fraction, fill = order)) +
+  geom_col(width = 1) +
+  coord_polar(theta = "y") +
+  theme_void() +
+  labs(fill = "Order",
+       title = "A")
+
+```
+ 
+
+
+Among the Dipterans, Mycetophilidae (small flies) and Psychodidae (drain flies) have
+the highest mean RRA while Ichneumonidae (parasitic wasp family) has the highest
+among the Hymenopterans (Fig 2A). 
+
+Ichneumonidae and Psychodidae also exhibited a high FOO appearing in 54.7% and 47.6% of samples respectively (Fig 2B)
+Mycetophilidae still displayed a high FOO of 41.6%. 
+
+The error bars for Mycetophilidae, Psychodidae, Scaridae (fungus gnats), Chloropidae (frit flies) and Ichneumonidae
+overlap therefore it is difficult to make conclusions about family dominance.
+
+The midge families showed a higher mean RRA than some Dipteran families inlcuding Chloropidae, Apididae, Drosophilidae and Phoridae,however, they still displayed low abundance in the sequencing data overall.
+
+Cecidomyiidae displayed the second highest FOO appearing in 50% of the samples,
+suggesting a higher presence than other Dipterans, except Pyshcodidae at 52.8%. Ceratopogonidae, however, appeared in less samples at 26.2%. 
+
+Aphididae  Formicidae (ants) Drosophilidae (fruit flies),
+Muscidae (house flies), Tachinidae (tachinid flies), Braconidae (braconid wasps) and Vespidae (wasps) all exhibited low mean RRA and FOO within the insect community (Fig 2).
+
+
+```{r sample graphs, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.cap="Figure 1 a) Mean relative read abundance across candidate pollinator families within total insect reads . Error bars represent ±1 SD. b) Frequency of occurrence of candidate pollinator species within all samples"}
+
+
+
+#relative read abundance calculation 
+
+insect_rra <- insect_reads %>%
+  group_by(Sample) %>%
+  mutate(
+    Reads = as.numeric(Reads),
+    total_reads = sum(Reads, na.rm = TRUE),
+    RRA = ifelse(total_reads > 0, Reads / total_reads, 0)
+  ) %>%
+  ungroup()
+
+# add a column stating what sample type reads come from
+
+rra_by_sample <- insect_rra %>%
+  mutate(
+    substrate = case_when(
+      Sample %in% leaf_litter ~ "LL",
+      Sample %in% banana_stem ~ "BP",
+      Sample %in% rotten_cocoa~ "CPR",
+      TRUE ~ "unknown"
+      )
+    ) 
+
+# candidate pollinator families
+
+pollinator_rra <- rra_by_sample %>%
+  filter(family %in% families_of_interest)
+
+# calculation of the mean RRA, standard deviations and standard errors of the data set 
+
+pollinator_rra_plot <- pollinator_rra %>%
+  group_by(order, family) %>%
+  summarise(
+    mean_RRA = mean(RRA),              # mean RRA
+    sd_RRA   = sd(RRA),                # standard deviation
+    se_RRA   = sd(RRA) / sqrt(n()),    # standard error
+    .groups = "drop"
+  ) %>%
+  mutate(
+    order  = factor(order, levels = c("Diptera","Hymenoptera","Hemiptera")),
+    family = factor(family, levels = families_of_interest)
+  )
+
+##relative read abundance graph for pollinator families of interest
+
+ggplot(pollinator_rra_plot, aes(
+  x = family, 
+  y = mean_RRA, 
+  fill = order)) +
+  geom_bar(stat = "identity", 
+           colour = "black", 
+           size = 0.3) +
+  geom_errorbar(aes(
+    ymin = mean_RRA - se_RRA, 
+    ymax = mean_RRA + se_RRA),
+    width = 0.2, 
+    colour = "black", 
+    size = 0.4) +
+  scale_fill_manual(values = c("Diptera"="skyblue",
+                               "Hymenoptera"="lightgreen",
+                               "Hemiptera"="salmon")) +
+  labs(
+       title = "A", 
+       x="Family", 
+       y="Mean Relative Read Abundance", 
+       fill = "Order") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.line = element_line(
+      colour = "black", 
+      size = 0.3),
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1)
+    )
+
+
+# frequency of occurrence
+
+# the frequency of occurrence calculates simply if a family was present in a sample
+# regardless or read number 
+
+# (For my own understanding - ifelse(test_expression, value_if_true, value_if_false) )
+
+insect_foo_plot <- pollinator_rra %>%
+  mutate(present = RRA > 0) %>%
+  group_by(order, family) %>%
+  summarise(
+    FOO = mean(present),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    order = factor(order,
+                   levels = c("Diptera", "Hymenoptera", "Hemiptera")),
+    family = factor(family,
+                    levels = families_of_interest),
+    FOO = FOO * 100
+  )# removes NA rows but preserves FOO calculation
+
+
+
+
+
+ggplot(insect_foo_plot, aes(x = family, y = FOO, fill = order)) +
+  geom_bar(stat = "identity", colour = "black", size = 0.3) +
+  scale_fill_manual(values = c("Diptera"="skyblue",
+                               "Hymenoptera"="lightgreen",
+                               "Hemiptera"="salmon")) +
+  labs(
+    title = "B",
+       x = "Family",
+       y = "Frequency of Occurence (%)",
+       fill = "Order") +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.line = element_line(colour = "black", size = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+*Presence of pollinators in different substrates*
+
+To compare differences in relative read abundance (RRA) and frequency of occurrence (FOO) between substrates, sample-level RRA was calculated using total insect reads within each sample as the denominator. Analyses were subsequently restricted to candidate pollinator families and samples collected from rotten cocoa pods, banana pseudostems and leaf litter, as these substrates have previously been identified as effective for attracting pollinators (Young, 1982; Adjaloo et al., 2013; Forbes and Northfield, 2017).
+
+Ceratopogonidae had a higher mean RRA in banana pseudostem compared with rotten cocoa, while no reads were detected in leaf litter samples (Fig. 3A). Furthermore, it was detected in 2 of 5 banana pseudostem samples compared with 7 of 19 rotten cocoa samples (Fig. 3C).
+
+Cecidomyiidae showed a similar mean RRA between rotten cocoa and leaf litter, with lower mean RRA in banana pseudostem. FOO showed that Cecidomyiidae was detected in 60% of banana pseudostem, 41.7% of leaf litter and 52.6% of rotten cocoa samples. Chloropidae showed a higher representation in moss samples in the wider insect community analysis, resulting in a reduced contribution across the focal substrates shown in Figure 3.
+
+Most Mycetophilidae reads were associated with leaf litter samples, whereas Psychodidae and Ichneumonidae had greater representation in rotten cocoa samples (Fig. 3A). Psychodidae showed a higher mean RRA in rotten cocoa compared with the other substrates. Mycetophilidae was detected in 50% of leaf litter samples, compared with 40% of banana pseudostem and 36.8% of rotten cocoa samples (Fig. 3B). Ichneumonidae, despite having a higher mean RRA in rotten cocoa, was detected in 80% of banana pseudostem compared to 33.3% of leaf litter and 63.1% of rotten cocoa samples. Psychodidae showed similar FOO between rotten cocoa and banana pseudostem, while occurrence was lower in leaf litter.
+
+Phoridae showed a higher mean RRA in banana pseudostem than the other substrates (Fig. 3A), while FOO indicated that the family was detected in 40% of banana pseudostem and 36.8% of rotten cocoa samples, compared with 8.3% of leaf litter samples. Aphididae, Formicidae and Vespidae showed greater occurrence in leaf litter, while Sciaridae showed greater occurrence in rotten cocoa (Fig. 3B). 
+
+Aphididae was detected in 1 sample from each substrate (Fig. 3C).
+
+
+```{r sampleplots, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=14, fig.height=6, out.width="100%", fig.cap="Figure 3: a) Mean relative read abundance (RRA) of candidate pollinator families within the pollinator community across different substrates. Error bars represent ±1 SD. b) Frequency of occurrence (FOO) of candidate pollinator families across substrates. c) Relative read abundance of candidate pollinator families in each samples. Samples are labelled with a farm name (AM, FO, IB, KA, KK, Max, YA) and a substrate (CPR: rotten pod rotten, LL: leaf litter, BP: banana pseudostem)."}
+
+
+# RRA and FOO broken down into sample type - the study focused on substrates commonly
+# found on the floor of cocoa bean farms (Young, 1982; Adjaloo et al., 2013; Forbes and Northfield, 2017).
+# these samples include banana pseudostems, rotten cocoa pods and leaf litter
+
+
+# clustered bar graph demonstrating RRA by family by substrate type
+
+rra_sample_plot <- pollinator_rra %>%
+  group_by(substrate, family, order) %>%
+  summarise(
+    mean_RRA = mean(RRA, na.rm = TRUE),
+    sd_RRA   = sd(RRA, na.rm = TRUE),
+    se_RRA   = sd(RRA, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) 
+
+
+##
+
+ggplot(rra_sample_plot,
+       aes(x = family, 
+           y = mean_RRA, 
+           fill = substrate)) +
+  
+  geom_bar(stat = "identity",
+           colour = "black", size = 0.3,
+           position = position_dodge(width = 0.8)) +
+  
+  geom_errorbar(
+    aes(
+      ymin = pmax(0, mean_RRA - sd_RRA),
+      ymax = mean_RRA + sd_RRA
+    ),
+    width = 0.2,
+    colour = "black",
+    linewidth = 0.4,
+    position = position_dodge(width = 0.8)
+  ) +
+  
+  labs(
+    title = "A",
+    x = "Family",
+    y = "Mean Relative Read Abundance",
+    fill = "Substrate"
+  ) +
+  
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.line = element_line(colour = "black", linewidth = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# frequency of occurrence
+
+foo_sample_plot <- pollinator_rra %>%
+  group_by(order,family, substrate) %>%
+  summarise(
+    FOO = mean(RRA > 0)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    FOO = FOO * 100
+  )
+  
+
+ggplot(foo_sample_plot,
+       aes(x = family, y = FOO, fill = substrate)) +
+  geom_bar(stat = "identity",
+           colour = "black", size = 0.3,
+           position = position_dodge(width = 0.8)) +
+  labs(
+    title = "B",
+    x = "Family",
+    y = "Frequency of Occurence (%)",
+    fill = "Substrate"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.line = element_line(colour = "black", linewidth = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# tile chart - this shows RRA across individual samples 
+
+ggplot(pollinator_rra, aes(x = Sample, y = family, fill = RRA)) +
+  geom_tile(color = "white") +
+  facet_grid(. ~ substrate, scales = "free_x", space = "free_x") +
+  scale_fill_gradient(low = "grey", high = "blue") +
+  labs(
+    title = "C",
+    x = "Sample",
+    y = "Family",
+    fill = "Relative Read Abundance"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+*Differences in substrate biodiversity*
+
+We compared differences between the number of families detected per sample in each
+substrate of interest (Fig 4A) to understand which substrate could attract a more
+biodiverse pollinator community. Banana pseudostem samples attracted the highest
+number of families per sample on average, however a rotten cocoa pod sample
+attracted the most families in total (8). One leaf litter sample attracted 6 families, but
+most samples demonstrated lower richness. 
+
+We visualised differences in community composition by substrate with an ordination plot 
+with a stress value of 0.1478 (Fig 4B)
+indicating a usable ordination plot that needs to be interpreted carefully (Dexter et al.,
+2018). Banana pseudostem and leaf litter overlapped in small clusters, while banana
+pseudostem exhibited more sporadic clustering, overlapping with most of the other two
+substrates suggesting similar composition. PERMANOVA results showed a significant
+difference between community composition (p = 0.032).
+
+```{r richnessplots, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hide', fig.cap="Figure 4: a) Comparison between the number of candidate pollinators detected per sample for each substrate. b) Non-metric Multidimensional Scaling (NMDS) plot based on Jaccard similarities for presence/absence data of pollinator families comparing composition of samples by substrate."}
+
+sample_family_richness <- rra_by_sample %>%
+  filter(family %in% families_of_interest) %>%
+  group_by(Sample, substrate) %>%
+  summarise(
+    n_families_detected = n_distinct(family[RRA > 0]),
+    .groups = "drop"
+  )
+
+
+# boxplot 
+
+ggplot(sample_family_richness,
+       aes(x = substrate, y = n_families_detected, fill = substrate)) +
+  geom_boxplot() +
+  labs(
+    x = "",
+    y = "Number of candidate families detected per sample",
+    fill = "Substrate",
+    title = "A"
+  ) +
+  theme_minimal(base_size = 12)
+
+# non metric multidimensional scaling 
+
+# Build community family matrix (creates data structure NMDS needs)
+comm_matrix <- pollinator_rra%>%
+  select(Sample, family, RRA) %>%
+  group_by(Sample, family) %>%
+  summarise(RRA = sum(RRA), .groups = "drop") %>%
+  pivot_wider(names_from = family, values_from = RRA, values_fill = 0) # if family does not have specific parameter put 0 
+
+# Extract metadata - distinct() creates table with one row per sample/substrate combination - NMDS needs to know what samples represent 
+metadata <- rra_by_sample %>%
+  distinct(Sample, substrate)
+
+# want metadata in excatly same order - match() finds corresponding metadata row for each sample in comm_matrix
+
+metadata <- metadata[
+  match(comm_matrix$Sample, metadata$Sample), 
+  ]
+
+# Remove sample column for NMDS, [,-1] removes column one as Sample column is identifier 
+comm <- as.data.frame(comm_matrix[,-1])
+
+# puts the sample names back as row names
+
+rownames(comm) <- comm_matrix$Sample
+
+# convert RRA into presence absence data
+
+comm_pa <- (comm > 0) * 1
+
+# removing samples with no detected families
+
+comm_pa_clean <- comm_pa[rowSums(comm_pa) > 0, ]
+
+# store the name of surviving families 
+
+kept_samples <- rownames(comm_pa_clean)
+
+# NMDS involves random starting configurations 
+# 123 means use the same random starting conditions every time - allows for reproducible results
+
+set.seed(123)
+
+# takes presence/absence community matrix - "jaccard tells 
+# NMDS how to measure between samples
+# k = 2 number of dimensions 
+
+nmds_pa <- metaMDS(comm_pa_clean, 
+                   distance = "jaccard", 
+                   k = 2, 
+                   trymax = 100)
+
+# keep only the metadata for samples that survived 
+# some samples may have been removed because contained no
+# detected families - need to make sure your substrate 
+# information corresponds only to samples actually used in 
+
+kept <- rownames(nmds_pa$points)
+
+metadata_clean <- metadata[match(kept, metadata$Sample), ]
+
+
+#Making the NMDS plot
+
+# Base NMDS plot = ccreates empty plot
+# type = "n" plot axes but don't draw the points
+plot(nmds_pa$points,
+     type = "n",
+     xlab = "NMDS1",
+     ylab = "NMDS2")
+
+# Add points - each dot represents one sample - colour represents substrate
+points(nmds_pa$points,
+       col = as.factor(metadata$substrate),
+       pch = 19,
+       cex = 1.3)
+
+# add legend
+
+legend("topright", legend = unique(metadata$substrate), 
+       col = 1:length(unique(metadata$substrate)), pch = 19,
+       cex = 0.8)
+
+# Add ellipses - shows spread of samples within each substrate
+
+ordiellipse(
+  nmds_pa,
+  groups = metadata_clean$substrate,
+  col = 1:length(unique(metadata_clean$substrate)),
+  kind = "sd",
+  draw = "polygon",
+  alpha = 80,
+  label = FALSE
+)
+
+
+#extract NMDS coordinates
+
+ordination_values <- as.data.frame(nmds_pa$points)
+
+# NMDS coordinates have sample names as their row names, rather than as normal column
+
+ordination_values$Sample <- rownames(nmds_pa$points)
+
+# adds substrate associated with each sample 
+
+ordination_values$substrate <- metadata_clean$substrate
+
+# gives stress value of NMDS represents the differences in my community data
+
+nmds_pa$stress
+
+# calculate Jaccard distance matrix - how different each pair of samples is based on which families are present, rather than how many reads 
+
+dist_mat <- vegdist(comm_pa_clean, method = "jaccard")
+
+
+# does candidate pollinator community composition differ between substrate types 
+
+permanova_result <- adonis2(
+  dist_mat ~ substrate,
+  data = metadata_clean,
+  permutations = 999
+  )
+
+permanova_result
+
+```
+
+*Presence of pollinators in different farms*
+
+We compared mean RRA and FOO of families of interest across four farm types: full
+sun, agroforestry, near forest and forest (Fig 5). Most of Ceratopogonidae's abundance
+in the sequencing data originated from near forest farms, while FOO data showed both
+an equal presence in forest and near forest samples and agroforest and full sun
+samples. Cecidomyiidae showed both a higher mean RRA and FOO in forest
+samples compared to other farm types while appearing in a similar number of other
+farm type samples.
+
+Ichneumonidae showed higher mean RRA in the full sun samples,Mycetophilidae exhibited an elevated mean RRA for agroforestry and Psychodidae mean RRA was lower in full sun samples compared to other farm types.
+
+FOO shows Ichneumonidae occurred in a similar
+proportion of agroforestry, full sun and near forest samples but
+did not appear in many forest samples (Fig 5B). Mycetophilidae appeared in a
+greater proportion of agroforests compared to other farms whereas
+Psychodidae appeared in slightly more agroforestry samples but lacked a clear trend in
+presence/absence data.
+
+Other families showed farm exclusivity. Aphididae reads were dominant in near forest
+samples and only present in forest and near forest samples. Drosophilidae only
+appeared agroforests while Muscidae only appeared near undisturbed forests (Fig 4B).
+Formicidae were absent in samples with lots of shade, only appearing in full sun and near
+forest samples (Fig 4B). Both Braconidae and Vespidae were not present in full sun
+farms contrasting with Ichneumonidae. 
+
+
+```{r farmplots, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.cap="Figure 5: a) Mean relative read abundance (RRA) of candidate pollinator families within the pollinator community across different farm types. Error bars represent ±1 SD. b) Frequency of occurrence (FOO) of candidate pollinator families across farm type."}
+
+# data separated by farm type
+
+
+full_sun <- c("AMLL5", 
+              "AMCPR5", 
+              "AMLL3", 
+              "AMBP1", 
+              "AMCPR2", 
+              "AMCPR1", 
+              "AMM2")
+
+near_for <- c("YACPR3", 
+              "YABP2", 
+              "YABP1", 
+              "YACPR2", 
+              "FOLL2", 
+              "FOBP1", 
+              "FOM2",
+              "YACPR1", 
+              "YALL1", 
+              "YAM2", 
+              "YALL2", 
+              "YACPR5", 
+              "FOLL3", 
+              "FOCPR1", 
+              "FOCPR5", 
+              "FOCPR2")
+
+in_for <- c("MaxCPR3", 
+            "MaxCPR4", 
+            "MaxCPR1", 
+            "IBM1", 
+            "MaxLL5", 
+            "IBCPR1", 
+            "MaxM1", 
+            "MaxLL1")
+
+agro <- c("KACPR1", 
+          "KACPR4", 
+          "KACPR3", 
+          "KKCPR1", 
+          "KKCPR4", 
+          "KKLL3",
+          "KKCPR5", 
+          "KABP1",
+          "KKLL4", 
+          "KKLL5", 
+          "KALL3", 
+          "KACPR5", 
+          "KKM2")
+
+
+
+
+
+pollinator_rra <- pollinator_rra %>%
+  mutate(
+    FarmType = case_when(
+      Sample %in% agro ~ "Agroforest",
+      Sample %in% full_sun ~ "Full Sun",
+      Sample %in% near_for ~ "Near Forest",
+      Sample %in% in_for ~ "In Forest",
+      TRUE ~ "unknown")
+    ) 
+
+
+
+mean_rra_farm <- pollinator_rra %>%
+  group_by(FarmType, family) %>%
+  summarise(
+    mean_RRA = mean(RRA, na.rm = TRUE),
+    sd_RRA   = sd(RRA, na.rm = TRUE),
+    n        = n(),
+    se_RRA   = sd_RRA / sqrt(n),
+    .groups = "drop"
+  )
+
+
+
+ggplot(mean_rra_farm,
+       aes(x = family, y = mean_RRA, fill = FarmType)) +
+  
+  geom_bar(stat = "identity",
+           colour = "black", size = 0.3,
+           position = position_dodge(width = 0.8)) +
+  
+  geom_errorbar(aes(ymin = mean_RRA - se_RRA,
+                    ymax = mean_RRA + se_RRA),
+                width = 0.2,
+                colour = "black",
+                size = 0.4,
+                position = position_dodge(width = 0.8)) +
+  labs(
+    title = "A",
+    x = "Family",
+    y = "Mean RRA",
+    fill = "Farm Type"
+  ) +
+  
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.line = element_line(colour = "black", size = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+
+#foo 
+
+
+farm_foo <- pollinator_rra %>%
+  mutate(present = RRA > 0)
+  
+
+farm_foo <- farm_foo %>%
+  group_by(FarmType, family) %>%
+  summarise(
+    n_samples = n(),            # total samples in that farm type
+    n_present = sum(present),   # samples where family was detected
+    freq = n_present / n_samples
+  ) %>%
+  ungroup()
+
+
+ggplot(farm_foo,
+       aes(x = family, 
+           y = freq, 
+           fill = FarmType)) +
+  
+  geom_bar(stat = "identity",
+           colour = "black", 
+           linewidth = 0.3,
+           position = position_dodge(width = 0.8)) +
+  labs (title = "B",
+        x = "Family",
+        y = "FOO",
+        fill = "Farm Type"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.line = element_line(
+      colour = "black", 
+      linewidth = 0.5),
+    axis.text.x = element_text(
+      angle = 45, 
+      hjust = 1)
+  )
+
+
+```
+
+**References**
+
+Adjaloo, M.K., Owusu-Ansah, E., Oduro, W. and Fleischer, T. (2017) Preference of cocoa
+pollinators for different breeding substrates in a cocoa-agroecosystem: a proxy approach. Ghana
+Journal of Forestry, 33, pp. 38–47. Available at:
+https://www.researchgate.net/publication/333320170_Preference_of_cocoa_pollinators_for_bre
+eding_substrates_PREFERENCE_OF_COCOA_POLLINATORS_FOR_DIFFERENT_BREEDING_SUB
+STRATES_IN_A_COCOA-AGROECOSYSTEM_A_PROXY_APPROACH#fullTextFileContent
+
+Claus, G., Vanhove, W., Damme P.V., Smagghe, G. (2018) Challenges in Cocoa Pollination: The
+Case of Côte d’Ivoire. Pollination in Plants. InTech. Available at:
+http://dx.doi.org/10.5772/intechopen.75361.
+
+Deagle, B. E., Thomas, A. C., McInnes, J. C., Clarke, L. J., Vesterinen, E. J., Clare, E. L., Kartzinel, T.
+R., & Eveson, J. P. (2019). Counting with DNA in metabarcoding studies: How should we convert
+sequence reads to dietary data? Molecular Ecology, 28(2), 391–406.
+https://doi.org/10.1111/mec.14734
+
+
+Espinosa Prieto, A., Hardion, L., Debortoli, N., Bournonville, T., Marescaux, J., van der Zon, K.A.E.
+and Beisel, J. (2025) Environmental DNA metabarcoding for catchment-scale detection of
+aquatic plants, invasive species, and land-use indicators in a large river. Ecological Indicators,
+178, 113943. https://doi.org/10.1016/j.ecolind.2025.113943
+
+Forbes, S.J. and Northfield, T.D. (2017) Increased pollinator habitat enhances cacao fruit set and
+predator conservation. Ecological Applications, 27(3), pp.887–899.
+https://doi.org/10.1002/eap.1491
+
+Jaramillo, M.A., Reyes-Palencia, J. and Jiménez, P. (2024) Floral biology and flower visitors of
+cocoa (Theobroma cacao L.) in the upper Magdalena Valley, Colombia. Flora, 313, 152480.
+https://doi.org/10.1016/j.flora.2024.152480
+
+Kennerley, W.L., Clucas, G.V. and Lyons, D.E. (2024) Multiple methods of diet assessment reveal
+differences in Atlantic puffin diet between ages, breeding stages, and years. Frontiers in Marine
+Science, 11, 1410805. https://doi.org/10.3389/fmars.2024.1410805
+
+Lander, T.A., Atta-Boateng, A., Toledo-Hernández, M., Wood, A., Malhi, Y., Solé, M., Tscharntke, T.
+and Wanger, T.C. (2025) Global chocolate supply is limited by low pollination and high
+temperatures. Communications Earth & Environment, 6(1), 97. https://doi.org/10.1038/s43247-
+025-02072-z
+
+Toledo-Hernández, M., Wanger, T.C. and Tscharntke, T. (2017) Neglected pollinators: Can
+enhanced pollination services improve cocoa yields? A review. Agriculture, Ecosystems &
+Environment, 247, pp.137–148. https://doi.org/10.1016/j.agee.2017.05.021
+
+Young, A. M. (1982). Effects of Shade Cover and Availability of Midge Breeding Sites on Pollinating
+Midge Populations and Fruit Set in Two Cocoa Farms. Journal of Applied Ecology, 19(1), 47–63.
+https://doi.org/10.2307/2402990
+
+
+
