@@ -30,33 +30,33 @@ proposal as potential pollinators
 
 The R markdown worflow includes:
 
-Data processing and quality control
+1. Data processing and quality control
 
 * Importing Illumina sequencing results
 * Organising OTU read counts
 * Identifying potential contaminants using the decontam package 
 * Removing contaminant and unwanted taxonomic assignments 
 
-Taxonomic filtering 
+2. Taxonomic filtering 
 
 * Restricing analysis to insect taxa 
 * Identifying candidate pollinator families across Diptera, Hymenoptera and Hemiptera
 
-Community analysis 
+3. Community analysis 
 
 * Relative read abundance (RRA)
 * Frequency of occurrence (FOO)
 * Candidate family richness 
 * Comparison between substrate and farm types 
 
-Community composition 
+4. Community composition 
 
 * Presence/absence transformation 
 * Jaccard distance
 * Non-metric multidimensional scaling (NMDS)
 * PERMANOVA to investigate differences in community composition between substrates
 
-Visualisation 
+5. Visualisation 
 
 * Taxonomic composition 
 * Candidate pollinator family abundance 
@@ -83,9 +83,10 @@ analysis and visualisation.
 
 **Repository Structure**
 
-├── README.md 
-├── dna-metabarcoding-visualisation-and-analysis.Rmd 
-├── dna-metabarcoding-visualisation-and-analysis.html 
+├── .gitignore\
+├── README.md\
+├── dna-metabarcoding-visualisation-and-analysis.Rmd\
+├── dna-metabarcoding-visualisation-and-analysis.html\
 └── Figures/
 
 **Files**
